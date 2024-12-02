@@ -7,9 +7,10 @@ from amazon_transcribe.client import TranscribeStreamingClient
 from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent
 from botocore.exceptions import BotoCoreError, ClientError
-import itertools
 import threading
 import time
+import os
+import wave
 
 # Audio input configuration
 CHUNK = 1024
@@ -18,16 +19,64 @@ CHANNELS = 1
 RATE = 16000
 
 
-def spinning_cursor():
-    spinner = itertools.cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-    while True:
-        yield next(spinner)
+def speak_response(text, polly_client):
+    try:
+        # Request speech synthesis
+        response = polly_client.synthesize_speech(
+            Text=text, OutputFormat="pcm", VoiceId="Joanna", Engine="neural"
+        )
+
+        if "AudioStream" in response:
+            from pygame import mixer
+
+            # Create a temporary wave file
+            with wave.open("response.wav", "wb") as wav_file:
+                wav_file.setnchannels(1)  # mono
+                wav_file.setsampwidth(2)  # 2 bytes per sample
+                wav_file.setframerate(16000)  # 16kHz
+                wav_file.writeframes(response["AudioStream"].read())
+
+            print("\nPress Enter to stop the voice playback...")
+
+            # Flag for controlling playback
+            should_stop = threading.Event()
+
+            def wait_for_input():
+                input()  # Wait for Enter key
+                should_stop.set()
+                mixer.music.stop()
+
+            # Play the audio
+            mixer.init()
+            mixer.music.load("response.wav")
+            mixer.music.play()
+
+            # Start input thread
+            input_thread = threading.Thread(target=wait_for_input)
+            input_thread.daemon = True
+            input_thread.start()
+
+            # Wait for audio to finish or stop signal
+            while mixer.music.get_busy() and not should_stop.is_set():
+                time.sleep(0.1)
+
+            if should_stop.is_set():
+                print("\nVoice playback stopped.")
+
+            mixer.quit()
+
+            # Clean up the temporary file
+            os.remove("response.wav")
+
+    except Exception as e:
+        print(f"Error in text-to-speech: {e}")
 
 
 class TranscriptHandler(TranscriptResultStreamHandler):
-    def __init__(self, bedrock_runtime, transcript_result_stream):
+    def __init__(self, bedrock_runtime, transcript_result_stream, polly_client):
         super().__init__(transcript_result_stream)
         self.bedrock_runtime = bedrock_runtime
+        self.polly_client = polly_client
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
@@ -59,6 +108,7 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         )
 
                         print("\nClaude: ", end="", flush=True)
+                        full_response = ""
                         response_stream = response.get("body")
                         if response_stream:
                             for event in response_stream:
@@ -72,19 +122,19 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                             text = chunk.get("delta", {}).get(
                                                 "text", ""
                                             )
+                                            full_response += text
                                             print(text, end="", flush=True)
                                 except Exception as chunk_error:
                                     print(f"\nError processing chunk: {chunk_error}")
                                     continue
 
                         print("\n")  # New line after response
+                        # Speak the response
+                        speak_response(full_response, self.polly_client)
                         print("-" * 50 + "\n")
 
                     except Exception as e:
                         print(f"\nError: {e}")
-                        import traceback
-
-                        print(traceback.format_exc())
 
 
 async def write_chunks(stream, audio_stream):
@@ -102,15 +152,18 @@ async def write_chunks(stream, audio_stream):
 async def main():
     transcribe_client = None
     bedrock_runtime = None
+    polly_client = None
     audio = None
     audio_stream = None
     tasks = []
 
     try:
+        print("Initializing services...")
         transcribe_client = TranscribeStreamingClient(region="us-west-2")
         bedrock_runtime = boto3.client(
             service_name="bedrock-runtime", region_name="us-west-2"
         )
+        polly_client = boto3.client("polly", region_name="us-west-2")
 
         audio = pyaudio.PyAudio()
         audio_stream = audio.open(
@@ -133,18 +186,16 @@ async def main():
 
         stream = await transcribe_client.start_stream_transcription(**stream_config)
 
-        handler = TranscriptHandler(bedrock_runtime, stream.output_stream)
+        handler = TranscriptHandler(bedrock_runtime, stream.output_stream, polly_client)
         handler_task = asyncio.create_task(handler.handle_events())
         writer_task = asyncio.create_task(write_chunks(stream, audio_stream))
 
         tasks = [handler_task, writer_task]
 
-        # Wait for tasks to complete or KeyboardInterrupt
         await asyncio.gather(*tasks)
 
     except KeyboardInterrupt:
-        # print("\nGracefully shutting down...")
-        pass
+        print("\nGracefully shutting down...")
     except Exception as e:
         print(f"\nError: {e}")
     finally:
