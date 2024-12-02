@@ -28,14 +28,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
     def __init__(self, bedrock_runtime, transcript_result_stream):
         super().__init__(transcript_result_stream)
         self.bedrock_runtime = bedrock_runtime
-        self.spinner = spinning_cursor()
-        self.spinner_running = False
-
-    def start_spinner(self):
-        self.spinner_running = True
-        while self.spinner_running:
-            print(f"\rProcessing your input {next(self.spinner)}", end="")
-            time.sleep(0.1)
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
@@ -43,10 +35,10 @@ class TranscriptHandler(TranscriptResultStreamHandler):
         for result in results:
             if result.alternatives:
                 transcript = result.alternatives[0].transcript
-                if not result.is_partial:
-                    print(f"\nUser: {transcript}")
-                    spinner_thread = threading.Thread(target=self.start_spinner)
-                    spinner_thread.start()
+                if result.is_partial:
+                    print(f"\rUser: {transcript}", end="", flush=True)
+                else:
+                    print(f"\rUser: {transcript}")  # Final transcript
 
                     try:
                         body = json.dumps(
@@ -65,11 +57,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                 accept="application/json",
                             )
                         )
-
-                        # Stop spinner
-                        self.spinner_running = False
-                        spinner_thread.join()
-                        print("\r", end="")  # Clear the spinner line
 
                         print("\nClaude: ", end="", flush=True)
                         response_stream = response.get("body")
@@ -94,32 +81,30 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         print("-" * 50 + "\n")
 
                     except Exception as e:
-                        self.spinner_running = False
-                        spinner_thread.join()
-                        print("\r", end="")  # Clear the spinner line
                         print(f"\nError: {e}")
-                        # Print full error details for debugging
                         import traceback
 
                         print(traceback.format_exc())
 
 
 async def write_chunks(stream, audio_stream):
-    while True:
-        try:
+    try:
+        while True:
             data = audio_stream.read(CHUNK, exception_on_overflow=False)
             await stream.input_stream.send_audio_event(audio_chunk=data)
-        except Exception as e:
-            print(f"Error writing chunks: {e}")
-            break
+    except asyncio.CancelledError:
+        # Handle task cancellation gracefully
+        raise
+    except Exception as e:
+        print(f"Error writing chunks: {e}")
 
 
 async def main():
-    # Initialize AWS clients
     transcribe_client = None
     bedrock_runtime = None
     audio = None
     audio_stream = None
+    tasks = []
 
     try:
         transcribe_client = TranscribeStreamingClient(region="us-west-2")
@@ -127,7 +112,6 @@ async def main():
             service_name="bedrock-runtime", region_name="us-west-2"
         )
 
-        # Initialize PyAudio
         audio = pyaudio.PyAudio()
         audio_stream = audio.open(
             format=FORMAT,
@@ -140,7 +124,6 @@ async def main():
         print("Listening... Press Ctrl+C to stop.")
         print("You can start speaking now!\n")
 
-        # Start transcription stream
         stream_config = {
             "media_sample_rate_hz": RATE,
             "media_encoding": "pcm",
@@ -150,35 +133,56 @@ async def main():
 
         stream = await transcribe_client.start_stream_transcription(**stream_config)
 
-        # Create and start the handler task
         handler = TranscriptHandler(bedrock_runtime, stream.output_stream)
         handler_task = asyncio.create_task(handler.handle_events())
-
-        # Start the audio streaming task
         writer_task = asyncio.create_task(write_chunks(stream, audio_stream))
 
-        # Wait for both tasks to complete
-        await asyncio.gather(handler_task, writer_task)
+        tasks = [handler_task, writer_task]
+
+        # Wait for tasks to complete or KeyboardInterrupt
+        await asyncio.gather(*tasks)
 
     except KeyboardInterrupt:
-        print("\nGracefully shutting down...")
+        # print("\nGracefully shutting down...")
+        pass
     except Exception as e:
         print(f"\nError: {e}")
     finally:
-        # Cleanup
+        # Cancel tasks first
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        # Wait for tasks to complete their cancellation
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Clean up audio resources
         if audio_stream:
             audio_stream.stop_stream()
             audio_stream.close()
         if audio:
             audio.terminate()
+
         print("\nThank you for using the chatbot!")
 
 
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
     try:
-        loop = asyncio.get_event_loop()
         loop.run_until_complete(main())
     except KeyboardInterrupt:
-        print("\nExiting...")
+        pass  # Already handled in main()
     finally:
-        loop.close()
+        try:
+            # Clean up any remaining tasks
+            tasks = asyncio.all_tasks(loop)
+            for task in tasks:
+                task.cancel()
+
+            # Give tasks a chance to complete
+            loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        except Exception:
+            pass
+        finally:
+            loop.close()
