@@ -1,0 +1,3 @@
+pyaudio
+boto3
+amazon-transcribe
