@@ -77,12 +77,87 @@ class TranscriptHandler(TranscriptResultStreamHandler):
         super().__init__(transcript_result_stream)
         self.bedrock_runtime = bedrock_runtime
         self.polly_client = polly_client
+        self.listening = True  # Always listening
+        self.polly_finished = threading.Event()
+
+    def speak_response(self, text):
+        mixer = None
+        mixer_lock = threading.Lock()
+        try:
+            response = self.polly_client.synthesize_speech(
+                Text=text, OutputFormat="pcm", VoiceId="Joanna", Engine="neural"
+            )
+
+            if "AudioStream" in response:
+                from pygame import mixer
+
+                with wave.open("response.wav", "wb") as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(16000)
+                    wav_file.writeframes(response["AudioStream"].read())
+
+                print("\nPress Enter to stop the voice playback...")
+
+                # Flag for controlling playback
+                should_stop = threading.Event()
+
+                def wait_for_input():
+                    try:
+                        input()  # Wait for Enter key
+                        should_stop.set()
+                        with mixer_lock:
+                            if mixer and mixer.get_init():
+                                mixer.music.stop()
+                    except Exception as e:
+                        print(f"\nError stopping playback: {e}")
+
+                # Initialize mixer
+                with mixer_lock:
+                    mixer.init()
+                    mixer.music.load("response.wav")
+                    mixer.music.play()
+
+                # Start input thread
+                input_thread = threading.Thread(target=wait_for_input)
+                input_thread.daemon = True
+                input_thread.start()
+
+                # Wait for audio to finish or stop signal
+                while mixer.music.get_busy() and not should_stop.is_set():
+                    time.sleep(0.1)
+
+                if should_stop.is_set():
+                    print("\nVoice playback stopped.")
+
+                # Clean up
+                with mixer_lock:
+                    if mixer and mixer.get_init():
+                        mixer.quit()
+
+                # Remove temporary file
+                try:
+                    os.remove("response.wav")
+                except Exception as e:
+                    print(f"Error removing temporary file: {e}")
+
+        except Exception as e:
+            print(f"Error in text-to-speech: {e}")
+        finally:
+            # Final cleanup
+            try:
+                with mixer_lock:
+                    if mixer and mixer.get_init():
+                        mixer.quit()
+            except Exception:
+                pass
+            self.polly_finished.set()
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
 
         for result in results:
-            if result.alternatives:
+            if result.alternatives and self.listening:
                 transcript = result.alternatives[0].transcript
                 if result.is_partial:
                     print(f"\rUser: {transcript}", end="", flush=True)
@@ -90,6 +165,11 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                     print(f"\rUser: {transcript}")  # Final transcript
 
                     try:
+                        # Process response
+                        self.listening = False  # Temporarily stop listening
+                        self.polly_finished.clear()
+
+                        # Get Claude's response
                         body = json.dumps(
                             {
                                 "anthropic_version": "bedrock-2023-05-31",
@@ -129,12 +209,22 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                     continue
 
                         print("\n")  # New line after response
+
                         # Speak the response
-                        speak_response(full_response, self.polly_client)
+                        self.speak_response(full_response)
+
                         print("-" * 50 + "\n")
+
+                        # Resume listening
+                        self.listening = True
+                        print("Listening... (Press Ctrl+C to stop)\n")
+                        return True
 
                     except Exception as e:
                         print(f"\nError: {e}")
+                        self.listening = True
+                        print("Listening... (Press Ctrl+C to stop)\n")
+                        return False
 
 
 async def write_chunks(stream, audio_stream):
@@ -174,7 +264,7 @@ async def main():
             frames_per_buffer=CHUNK,
         )
 
-        print("Listening... Press Ctrl+C to stop.")
+        print("\nListening... Press Ctrl+C to stop.")
         print("You can start speaking now!\n")
 
         stream_config = {

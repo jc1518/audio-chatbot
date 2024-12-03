@@ -7,18 +7,19 @@ This chatbot application uses AWS services to enable voice interaction with Clau
 1. AWS Account with access to:
    - AWS Transcribe
    - AWS Bedrock (with Claude 3 Sonnet model access)
-   
 2. AWS credentials configured locally
 3. Python 3.7+
 
 ## Installation
 
 1. Install the required packages:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 2. Make sure you have PortAudio installed for PyAudio to work:
+
 - On Ubuntu/Debian: `sudo apt-get install portaudio19-dev`
 - On macOS: `brew install portaudio`
 - On Windows: No additional installation needed
@@ -26,6 +27,7 @@ pip install -r requirements.txt
 ## Usage
 
 1. Run the chatbot:
+
 ```bash
 python chatbot.py
 ```
