@@ -42,3 +42,6 @@ htmlcov/
 
 # Environment variables
 .env
+
+# Audio
+*.wav

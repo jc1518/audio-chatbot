@@ -240,72 +240,78 @@ async def write_chunks(stream, audio_stream):
 
 
 async def main():
-    transcribe_client = None
-    bedrock_runtime = None
-    polly_client = None
-    audio = None
-    audio_stream = None
-    tasks = []
+    while True:  # Loop to allow restarting on timeout
+        transcribe_client = None
+        bedrock_runtime = None
+        polly_client = None
+        audio = None
+        audio_stream = None
+        tasks = []
 
-    try:
-        print("Initializing services...")
-        transcribe_client = TranscribeStreamingClient(region="us-west-2")
-        bedrock_runtime = boto3.client(
-            service_name="bedrock-runtime", region_name="us-west-2"
-        )
-        polly_client = boto3.client("polly", region_name="us-west-2")
+        try:
+            print("Initializing services...")
+            transcribe_client = TranscribeStreamingClient(region="us-west-2")
+            bedrock_runtime = boto3.client(
+                service_name="bedrock-runtime", region_name="us-west-2"
+            )
+            polly_client = boto3.client("polly", region_name="us-west-2")
 
-        audio = pyaudio.PyAudio()
-        audio_stream = audio.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            input=True,
-            frames_per_buffer=CHUNK,
-        )
+            audio = pyaudio.PyAudio()
+            audio_stream = audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK,
+            )
 
-        print("\nListening... Press Ctrl+C to stop.")
-        print("You can start speaking now!\n")
+            print("\nListening... Press Ctrl+C to stop.")
+            print("You can start speaking now!\n")
 
-        stream_config = {
-            "media_sample_rate_hz": RATE,
-            "media_encoding": "pcm",
-            "language_code": "en-US",
-            "enable_partial_results_stabilization": True,
-        }
+            stream_config = {
+                "media_sample_rate_hz": RATE,
+                "media_encoding": "pcm",
+                "language_code": "en-US",
+                "enable_partial_results_stabilization": True,
+            }
 
-        stream = await transcribe_client.start_stream_transcription(**stream_config)
+            stream = await transcribe_client.start_stream_transcription(**stream_config)
 
-        handler = TranscriptHandler(bedrock_runtime, stream.output_stream, polly_client)
-        handler_task = asyncio.create_task(handler.handle_events())
-        writer_task = asyncio.create_task(write_chunks(stream, audio_stream))
+            handler = TranscriptHandler(
+                bedrock_runtime, stream.output_stream, polly_client
+            )
+            handler_task = asyncio.create_task(handler.handle_events())
+            writer_task = asyncio.create_task(write_chunks(stream, audio_stream))
 
-        tasks = [handler_task, writer_task]
+            tasks = [handler_task, writer_task]
 
-        await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks)
 
-    except KeyboardInterrupt:
-        print("\nGracefully shutting down...")
-    except Exception as e:
-        print(f"\nError: {e}")
-    finally:
-        # Cancel tasks first
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+        except KeyboardInterrupt:
+            print("\nGracefully shutting down...")
+            break  # Exit the loop on manual interrupt
+        except Exception as e:
+            print(f"\nError: {e}")
+            # Optionally, you can add a delay before restarting
+            await asyncio.sleep(1)  # Delay before restarting
+        finally:
+            # Cancel tasks first
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
-        # Wait for tasks to complete their cancellation
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Wait for tasks to complete their cancellation
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Clean up audio resources
-        if audio_stream:
-            audio_stream.stop_stream()
-            audio_stream.close()
-        if audio:
-            audio.terminate()
+            # Clean up audio resources
+            if audio_stream:
+                audio_stream.stop_stream()
+                audio_stream.close()
+            if audio:
+                audio.terminate()
 
-        print("\nThank you for using the chatbot!")
+            print("\nThank you for using the chatbot!")
 
 
 if __name__ == "__main__":
