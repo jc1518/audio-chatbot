@@ -1,14 +1,15 @@
-# Voice-enabled Chatbot with AWS Services
+# Audio Chatbot
 
-This chatbot application uses AWS services to enable voice interaction with Claude 3 Sonnet. It captures voice input, transcribes it using AWS Transcribe Streaming, and gets responses from Claude using AWS Bedrock.
+This chatbot application uses AWS services to enable voice interaction with LLM in Bedrock. It captures voice input, transcribes it using AWS Transcribe Streaming, and gets responses from model using AWS Bedrock, then uses Polly to convert text to speech.
 
 ## Prerequisites
 
 1. AWS Account with access to:
    - AWS Transcribe
-   - AWS Bedrock (with Claude 3 Sonnet model access)
+   - AWS Polly
+   - AWS Bedrock model access
 2. AWS credentials configured locally
-3. Python 3.7+
+3. Python 3.11+
 
 ## Installation
 
@@ -26,17 +27,6 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Run the chatbot:
-
 ```bash
 python chatbot.py
 ```
-
-2. Speak into your microphone
-3. The transcribed text will appear on screen
-4. Claude's response will be displayed
-5. Press Ctrl+C to stop the program
-
-## Note
-
-Make sure you have proper AWS credentials configured with access to AWS Transcribe and Bedrock services in the us-west-2 region.
