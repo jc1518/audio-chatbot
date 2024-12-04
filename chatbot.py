@@ -19,75 +19,14 @@ CHANNELS = 1
 RATE = 16000
 
 
-# def speak_response(text, polly_client):
-#     try:
-#         print(f"DEBUG: Requesting speech synthesis for text: {text}")
-#         # Request speech synthesis
-#         response = polly_client.synthesize_speech(
-#             Text=text,
-#             OutputFormat="pcm",
-#             VoiceId="Zhiyu",  # Ensure this voice is available for Chinese
-#             Engine="generative",
-#             LanguageCode="cmn-CN",
-#         )
-
-#         if "AudioStream" in response:
-#             print("DEBUG: Audio stream received.")
-#             from pygame import mixer
-
-#             # Create a temporary wave file
-#             with wave.open("response.wav", "wb") as wav_file:
-#                 wav_file.setnchannels(1)  # mono
-#                 wav_file.setsampwidth(2)  # 2 bytes per sample
-#                 wav_file.setframerate(16000)  # 16kHz
-#                 wav_file.writeframes(response["AudioStream"].read())
-
-#             print("\nPress Enter to stop the voice playback...")
-
-#             # Flag for controlling playback
-#             should_stop = threading.Event()
-
-#             def wait_for_input():
-#                 input()  # Wait for Enter key
-#                 should_stop.set()
-#                 mixer.music.stop()
-
-#             # Play the audio
-#             mixer.init()
-#             mixer.music.load("response.wav")
-#             mixer.music.play()
-
-#             # Start input thread
-#             input_thread = threading.Thread(target=wait_for_input)
-#             input_thread.daemon = True
-#             input_thread.start()
-
-#             # Wait for audio to finish or stop signal
-#             while mixer.music.get_busy() and not should_stop.is_set():
-#                 time.sleep(0.1)
-
-#             if should_stop.is_set():
-#                 print("\nVoice playback stopped.")
-
-#             mixer.quit()
-
-#             # Clean up the temporary file
-#             os.remove("response.wav")
-
-#         else:
-#             print("DEBUG: No audio stream in response.")
-
-#     except ClientError as e:
-#         print(f"ClientError: {e.response['Error']['Message']}")
-#     except BotoCoreError as e:
-#         print(f"BotoCoreError: {e}")
-#     except Exception as e:
-#         print(f"Error in text-to-speech: {e}")
-
-
 class TranscriptHandler(TranscriptResultStreamHandler):
     def __init__(
-        self, bedrock_runtime, transcript_result_stream, polly_client, language_code
+        self,
+        bedrock_runtime,
+        transcript_result_stream,
+        polly_client,
+        language_code,
+        converstation_history,
     ):
 
         super().__init__(transcript_result_stream)
@@ -96,6 +35,9 @@ class TranscriptHandler(TranscriptResultStreamHandler):
         self.language_code = language_code
         self.listening = True  # Always listening
         self.polly_finished = threading.Event()
+        self.conversation_history = (
+            converstation_history  # Initialize conversation history
+        )
 
     def speak_response(self, text):
         mixer = None
@@ -190,21 +132,20 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         self.listening = False  # Temporarily stop listening
                         self.polly_finished.clear()
 
+                        # Add user message to conversation history
+                        self.conversation_history.append(
+                            {"role": "user", "content": [{"text": transcript}]}
+                        )  # Wrap in list
+
                         inferenceConfig = {
                             "maxTokens": 1000,
                             "temperature": 0.2,
                             "topP": 0.9,
                         }
 
-                        messages = [
-                            {
-                                "role": "user",
-                                "content": [{"text": transcript}],
-                            }
-                        ]
-
+                        # Include conversation history in messages
+                        messages = self.conversation_history.copy()  # Copy the history
                         response = self.bedrock_runtime.converse_stream(
-                            # modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
                             modelId="us.amazon.nova-pro-v1:0",
                             inferenceConfig=inferenceConfig,
                             messages=messages,
@@ -227,6 +168,11 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                     continue
 
                         print("\n")  # New line after response
+
+                        # Add assistant response to conversation history
+                        self.conversation_history.append(
+                            {"role": "assistant", "content": [{"text": full_response}]}
+                        )  # Wrap in list
 
                         # Speak the response
                         self.speak_response(full_response)
@@ -275,6 +221,7 @@ async def main():
 
     language_choice = input("Enter the number corresponding to your choice: ")
     selected_language = supported_languages.get(language_choice, "en-US")
+    conversation_history = []  # Initialize conversation history
     while True:  # Loop to allow restarting on timeout
         transcribe_client = None
         bedrock_runtime = None
@@ -314,7 +261,11 @@ async def main():
             stream = await transcribe_client.start_stream_transcription(**stream_config)
 
             handler = TranscriptHandler(
-                bedrock_runtime, stream.output_stream, polly_client, selected_language
+                bedrock_runtime,
+                stream.output_stream,
+                polly_client,
+                selected_language,
+                conversation_history,
             )
             handler_task = asyncio.create_task(handler.handle_events())
             writer_task = asyncio.create_task(write_chunks(stream, audio_stream))
