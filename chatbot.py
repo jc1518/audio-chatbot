@@ -19,73 +19,94 @@ CHANNELS = 1
 RATE = 16000
 
 
-def speak_response(text, polly_client):
-    try:
-        # Request speech synthesis
-        response = polly_client.synthesize_speech(
-            Text=text, OutputFormat="pcm", VoiceId="Joanna", Engine="neural"
-        )
+# def speak_response(text, polly_client):
+#     try:
+#         print(f"DEBUG: Requesting speech synthesis for text: {text}")
+#         # Request speech synthesis
+#         response = polly_client.synthesize_speech(
+#             Text=text,
+#             OutputFormat="pcm",
+#             VoiceId="Zhiyu",  # Ensure this voice is available for Chinese
+#             Engine="generative",
+#             LanguageCode="cmn-CN",
+#         )
 
-        if "AudioStream" in response:
-            from pygame import mixer
+#         if "AudioStream" in response:
+#             print("DEBUG: Audio stream received.")
+#             from pygame import mixer
 
-            # Create a temporary wave file
-            with wave.open("response.wav", "wb") as wav_file:
-                wav_file.setnchannels(1)  # mono
-                wav_file.setsampwidth(2)  # 2 bytes per sample
-                wav_file.setframerate(16000)  # 16kHz
-                wav_file.writeframes(response["AudioStream"].read())
+#             # Create a temporary wave file
+#             with wave.open("response.wav", "wb") as wav_file:
+#                 wav_file.setnchannels(1)  # mono
+#                 wav_file.setsampwidth(2)  # 2 bytes per sample
+#                 wav_file.setframerate(16000)  # 16kHz
+#                 wav_file.writeframes(response["AudioStream"].read())
 
-            print("\nPress Enter to stop the voice playback...")
+#             print("\nPress Enter to stop the voice playback...")
 
-            # Flag for controlling playback
-            should_stop = threading.Event()
+#             # Flag for controlling playback
+#             should_stop = threading.Event()
 
-            def wait_for_input():
-                input()  # Wait for Enter key
-                should_stop.set()
-                mixer.music.stop()
+#             def wait_for_input():
+#                 input()  # Wait for Enter key
+#                 should_stop.set()
+#                 mixer.music.stop()
 
-            # Play the audio
-            mixer.init()
-            mixer.music.load("response.wav")
-            mixer.music.play()
+#             # Play the audio
+#             mixer.init()
+#             mixer.music.load("response.wav")
+#             mixer.music.play()
 
-            # Start input thread
-            input_thread = threading.Thread(target=wait_for_input)
-            input_thread.daemon = True
-            input_thread.start()
+#             # Start input thread
+#             input_thread = threading.Thread(target=wait_for_input)
+#             input_thread.daemon = True
+#             input_thread.start()
 
-            # Wait for audio to finish or stop signal
-            while mixer.music.get_busy() and not should_stop.is_set():
-                time.sleep(0.1)
+#             # Wait for audio to finish or stop signal
+#             while mixer.music.get_busy() and not should_stop.is_set():
+#                 time.sleep(0.1)
 
-            if should_stop.is_set():
-                print("\nVoice playback stopped.")
+#             if should_stop.is_set():
+#                 print("\nVoice playback stopped.")
 
-            mixer.quit()
+#             mixer.quit()
 
-            # Clean up the temporary file
-            os.remove("response.wav")
+#             # Clean up the temporary file
+#             os.remove("response.wav")
 
-    except Exception as e:
-        print(f"Error in text-to-speech: {e}")
+#         else:
+#             print("DEBUG: No audio stream in response.")
+
+#     except ClientError as e:
+#         print(f"ClientError: {e.response['Error']['Message']}")
+#     except BotoCoreError as e:
+#         print(f"BotoCoreError: {e}")
+#     except Exception as e:
+#         print(f"Error in text-to-speech: {e}")
 
 
 class TranscriptHandler(TranscriptResultStreamHandler):
-    def __init__(self, bedrock_runtime, transcript_result_stream, polly_client):
+    def __init__(
+        self, bedrock_runtime, transcript_result_stream, polly_client, language_code
+    ):
+
         super().__init__(transcript_result_stream)
         self.bedrock_runtime = bedrock_runtime
         self.polly_client = polly_client
+        self.language_code = language_code
         self.listening = True  # Always listening
         self.polly_finished = threading.Event()
 
     def speak_response(self, text):
         mixer = None
         mixer_lock = threading.Lock()
+        if self.language_code == "zh-CN":
+            voice_id = "Zhiyu"
+        else:
+            voice_id = "Joanna"
         try:
             response = self.polly_client.synthesize_speech(
-                Text=text, OutputFormat="pcm", VoiceId="Joanna", Engine="neural"
+                Text=text, OutputFormat="pcm", VoiceId=voice_id, Engine="neural"
             )
 
             if "AudioStream" in response:
@@ -237,6 +258,23 @@ async def write_chunks(stream, audio_stream):
 
 
 async def main():
+    supported_languages = {
+        "1": "en-US",
+        "2": "zh-CN",
+        # "3": "ja-JP",
+        # "4": "es-ES",
+    }
+
+    # Prompt user to select a language
+    print("Select a language for transcription:")
+    for key, value in supported_languages.items():
+        if value == "en-US":
+            print(f"{key}: English")
+        if value == "zh-CN":
+            print(f"{key}: 中文")
+
+    language_choice = input("Enter the number corresponding to your choice: ")
+    selected_language = supported_languages.get(language_choice, "en-US")
     while True:  # Loop to allow restarting on timeout
         transcribe_client = None
         bedrock_runtime = None
@@ -246,7 +284,7 @@ async def main():
         tasks = []
 
         try:
-            # print("Initializing services...")
+
             transcribe_client = TranscribeStreamingClient(region="us-west-2")
             bedrock_runtime = boto3.client(
                 service_name="bedrock-runtime", region_name="us-west-2"
@@ -265,17 +303,18 @@ async def main():
             print("\nListening... Press Ctrl+C to stop.")
             print("You can start speaking now!\n")
 
+            # Update stream_config with the selected language
             stream_config = {
                 "media_sample_rate_hz": RATE,
                 "media_encoding": "pcm",
-                "language_code": "en-US",
+                "language_code": selected_language,  # Use the selected language
                 "enable_partial_results_stabilization": True,
             }
 
             stream = await transcribe_client.start_stream_transcription(**stream_config)
 
             handler = TranscriptHandler(
-                bedrock_runtime, stream.output_stream, polly_client
+                bedrock_runtime, stream.output_stream, polly_client, selected_language
             )
             handler_task = asyncio.create_task(handler.handle_events())
             writer_task = asyncio.create_task(write_chunks(stream, audio_stream))
