@@ -169,41 +169,38 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         self.listening = False  # Temporarily stop listening
                         self.polly_finished.clear()
 
-                        # Get Claude's response
-                        body = json.dumps(
+                        inferenceConfig = {
+                            "maxTokens": 1000,
+                            "temperature": 0.2,
+                            "topP": 0.9,
+                        }
+
+                        messages = [
                             {
-                                "anthropic_version": "bedrock-2023-05-31",
-                                "max_tokens": 1000,
-                                "messages": [{"role": "user", "content": transcript}],
+                                "role": "user",
+                                "content": [{"text": transcript}],
                             }
+                        ]
+
+                        response = self.bedrock_runtime.converse_stream(
+                            # modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+                            modelId="us.amazon.nova-pro-v1:0",
+                            inferenceConfig=inferenceConfig,
+                            messages=messages,
                         )
 
-                        response = (
-                            self.bedrock_runtime.invoke_model_with_response_stream(
-                                modelId="anthropic.claude-3-sonnet-20240229-v1:0",
-                                body=body,
-                                contentType="application/json",
-                                accept="application/json",
-                            )
-                        )
-
-                        print("\nClaude: ", end="", flush=True)
+                        print("\nAssistant: ", end="", flush=True)
                         full_response = ""
-                        response_stream = response.get("body")
+                        response_stream = response.get("stream")
                         if response_stream:
                             for event in response_stream:
                                 try:
-                                    chunk_bytes = event.get("chunk", {}).get(
-                                        "bytes", b""
-                                    )
-                                    if chunk_bytes:
-                                        chunk = json.loads(chunk_bytes.decode("utf-8"))
-                                        if chunk.get("type") == "content_block_delta":
-                                            text = chunk.get("delta", {}).get(
-                                                "text", ""
-                                            )
-                                            full_response += text
-                                            print(text, end="", flush=True)
+                                    if "contentBlockDelta" in event:
+                                        text = event["contentBlockDelta"]["delta"][
+                                            "text"
+                                        ]
+                                        full_response += text
+                                        print(text, end="", flush=True)
                                 except Exception as chunk_error:
                                     print(f"\nError processing chunk: {chunk_error}")
                                     continue
@@ -249,7 +246,7 @@ async def main():
         tasks = []
 
         try:
-            print("Initializing services...")
+            # print("Initializing services...")
             transcribe_client = TranscribeStreamingClient(region="us-west-2")
             bedrock_runtime = boto3.client(
                 service_name="bedrock-runtime", region_name="us-west-2"
@@ -288,7 +285,6 @@ async def main():
             await asyncio.gather(*tasks)
 
         except KeyboardInterrupt:
-            print("\nGracefully shutting down...")
             break  # Exit the loop on manual interrupt
         except Exception as e:
             print(f"\nError: {e}")
