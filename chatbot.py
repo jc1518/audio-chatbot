@@ -2,6 +2,7 @@ import pyaudio
 import boto3
 import json
 import sys
+import random
 import asyncio
 from amazon_transcribe.client import TranscribeStreamingClient
 from amazon_transcribe.handlers import TranscriptResultStreamHandler
@@ -17,6 +18,14 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
+
+
+class NullDevice:
+    def write(self, *args, **kwargs):
+        pass
+
+    def flush(self):
+        pass
 
 
 class TranscriptHandler(TranscriptResultStreamHandler):
@@ -52,7 +61,11 @@ class TranscriptHandler(TranscriptResultStreamHandler):
             )
 
             if "AudioStream" in response:
+                original_stdout = sys.stdout
+                sys.stdout = NullDevice()
                 from pygame import mixer
+
+                sys.stdout = original_stdout
 
                 with wave.open("response.wav", "wb") as wav_file:
                     wav_file.setnchannels(1)
@@ -143,11 +156,31 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                             "topP": 0.9,
                         }
 
+                        system = [
+                            {
+                                "text": """You are a highly intelligent and engaging virtual assistant designed to assist users with a wide range of inquiries and tasks.
+                                  Your primary goal is to provide accurate, informative, concise and helpful responses while ensuring a positive user experience. Keep your
+                                  answer within 5 sentences."""
+                            }
+                        ]
+
+                        models = [
+                            "us.amazon.nova-micro-v1:0",
+                            "us.amazon.nova-lite-v1:0",
+                            "us.amazon.nova-pro-v1:0",
+                            "anthropic.claude-3-5-haiku-20241022-v1:0",
+                            "anthropic.claude-3-5-sonnet-20240620-v1:0",
+                            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        ]
+
+                        modelId = random.choice(models)
+                        print(f"\n\r(calling {modelId})")
                         # Include conversation history in messages
                         messages = self.conversation_history.copy()  # Copy the history
                         response = self.bedrock_runtime.converse_stream(
-                            modelId="us.amazon.nova-pro-v1:0",
+                            modelId=modelId,
                             inferenceConfig=inferenceConfig,
+                            system=system,
                             messages=messages,
                         )
 
@@ -181,13 +214,17 @@ class TranscriptHandler(TranscriptResultStreamHandler):
 
                         # Resume listening
                         self.listening = True
-                        print("Listening... (Press Ctrl+C to stop)\n")
+                        print(
+                            "Listening... You can start speaking now! (Press Ctrl+C to stop)\n"
+                        )
                         return True
 
                     except Exception as e:
                         print(f"\nError: {e}")
                         self.listening = True
-                        print("Listening... (Press Ctrl+C to stop)\n")
+                        print(
+                            "Listening... You can start speaking now! (Press Ctrl+C to stop)\n"
+                        )
                         return False
 
 
@@ -247,8 +284,7 @@ async def main():
                 frames_per_buffer=CHUNK,
             )
 
-            print("\nListening... Press Ctrl+C to stop.")
-            print("You can start speaking now!\n")
+            print("Listening... You can start speaking now! (Press Ctrl+C to stop)\n")
 
             # Update stream_config with the selected language
             stream_config = {
