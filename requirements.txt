@@ -3,3 +3,4 @@ boto3
 amazon-transcribe
 pygame
 keyboard
+duckduckgo_search
