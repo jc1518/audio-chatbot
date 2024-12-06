@@ -25,13 +25,14 @@ INFERENCE_CONFIG = {
     "maxTokens": 1000,
     "temperature": 0.2,
     "topP": 0.9,
+    "stopSequences": [],
 }
 
 SYSTEM = [
     {
         "text": """You are a highly intelligent and engaging virtual assistant designed to assist users with a wide range of inquiries and tasks.
           Your primary goal is to provide accurate, informative, concise and helpful responses while ensuring a positive user experience. Keep your
-          answer within 5 sentences."""
+          answer within 5 sentences. When appropriate, use the web_search tool to find up-to-date information to support your responses."""
     }
 ]
 
@@ -52,13 +53,14 @@ TOOL_CONFIG = {
                             "max_results": {
                                 "type": "integer",
                                 "description": "The maximum number of results to return",
+                                "default": 3,
                             },
                         },
                         "required": ["query"],
                     }
                 },
             }
-        },
+        }
     ]
 }
 
@@ -90,6 +92,21 @@ class TranscriptHandler(TranscriptResultStreamHandler):
         self.conversation_history = (
             converstation_history  # Initialize conversation history
         )
+
+    def handle_tool_use(self, tool_use):
+        try:
+            if tool_use["name"] == "web_search":
+                input_data = json.loads(tool_use["input"])
+                query = input_data["query"]
+                max_results = input_data.get("max_results", 3)
+                search_results = web_search(query, max_results)
+                return {
+                    "toolUseId": tool_use["toolUseId"],
+                    "content": [{"json": search_results}],
+                }
+        except Exception as e:
+            print(f"Error executing web_search: {e}")
+            return {"toolUseId": tool_use["toolUseId"], "content": [{"json": []}]}
 
     def speak_response(self, text):
         mixer = None
@@ -193,41 +210,101 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         # Add user message to conversation history
                         self.conversation_history.append(
                             {"role": "user", "content": [{"text": transcript}]}
-                        )  # Wrap in list
+                        )
 
                         modelId = random.choice(MODELS)
                         print(f"\n\r(calling {modelId})")
-                        # Include conversation history in messages
-                        messages = self.conversation_history.copy()  # Copy the history
+
+                        full_response = ""
+                        current_tool_use = None
+
                         response = self.bedrock_runtime.converse_stream(
                             modelId=modelId,
                             inferenceConfig=INFERENCE_CONFIG,
                             system=SYSTEM,
-                            messages=messages,
+                            messages=self.conversation_history,
+                            toolConfig=TOOL_CONFIG,
                         )
 
                         print("\nAssistant: ", end="", flush=True)
-                        full_response = ""
                         response_stream = response.get("stream")
                         if response_stream:
                             for event in response_stream:
                                 try:
-                                    if "contentBlockDelta" in event:
-                                        text = event["contentBlockDelta"]["delta"][
-                                            "text"
-                                        ]
-                                        full_response += text
-                                        print(text, end="", flush=True)
+                                    if "contentBlockStart" in event:
+                                        start = event["contentBlockStart"].get(
+                                            "start", {}
+                                        )
+                                        if "toolUse" in start:
+                                            current_tool_use = start["toolUse"]
+
+                                    elif "contentBlockDelta" in event:
+                                        delta = event["contentBlockDelta"]["delta"]
+                                        if "text" in delta:
+                                            text = delta["text"]
+                                            full_response += text
+                                            print(text, end="", flush=True)
+                                        elif "toolUse" in delta and current_tool_use:
+                                            current_tool_use["input"] = delta[
+                                                "toolUse"
+                                            ]["input"]
+
+                                    elif "contentBlockStop" in event:
+                                        if current_tool_use:
+                                            # Handle tool use and add results to conversation
+                                            tool_result = self.handle_tool_use(
+                                                current_tool_use
+                                            )
+                                            self.conversation_history.append(
+                                                {
+                                                    "role": "assistant",
+                                                    "content": [
+                                                        {"text": full_response},
+                                                        {"toolUse": current_tool_use},
+                                                    ],
+                                                }
+                                            )
+                                            self.conversation_history.append(
+                                                {
+                                                    "role": "tool",
+                                                    "content": tool_result["content"],
+                                                }
+                                            )
+                                            current_tool_use = None
+
+                                            # Get the next response after tool use
+                                            response = (
+                                                self.bedrock_runtime.converse_stream(
+                                                    modelId=modelId,
+                                                    inferenceConfig=INFERENCE_CONFIG,
+                                                    system=SYSTEM,
+                                                    messages=self.conversation_history,
+                                                    toolConfig=TOOL_CONFIG,
+                                                )
+                                            )
+                                            response_stream = response.get("stream")
+
+                                    elif "messageStop" in event:
+                                        if (
+                                            event["messageStop"]["stopReason"]
+                                            == "end_turn"
+                                        ):
+                                            break
+
                                 except Exception as chunk_error:
                                     print(f"\nError processing chunk: {chunk_error}")
                                     continue
 
                         print("\n")  # New line after response
 
-                        # Add assistant response to conversation history
-                        self.conversation_history.append(
-                            {"role": "assistant", "content": [{"text": full_response}]}
-                        )  # Wrap in list
+                        # Add final assistant response to conversation history if not already added
+                        if full_response and not current_tool_use:
+                            self.conversation_history.append(
+                                {
+                                    "role": "assistant",
+                                    "content": [{"text": full_response}],
+                                }
+                            )
 
                         # Speak the response
                         self.speak_response(full_response)

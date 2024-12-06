@@ -12,7 +12,7 @@ def web_search(query, max_results=3):
             formatted_results.append(
                 {
                     "title": result["title"],
-                    "link": result["link"],
+                    "link": result["href"],
                     "body": result["body"],
                 }
             )
