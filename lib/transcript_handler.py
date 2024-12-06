@@ -1,7 +1,5 @@
 import threading
 import sys
-import wave
-import os
 import random
 import json
 import time
@@ -15,6 +13,7 @@ from lib.web_search import web_search
 SIZE = -16
 CHANNELS = 1
 RATE = 16000
+CHUNK = 1024
 
 # Bedrock settings
 MODELS = [
@@ -36,29 +35,26 @@ INFERENCE_CONFIG = {
 SYSTEM = [
     {
         "text": f"""
-          # Core Directive
-
+          ## Core Directive
           You are a highly intelligent virtual assistant committed to providing accurate, informative, and concise responses to user inquiries.
-          
+
+          ## Current Context Awareness
+          - Today's date is {time.strftime("%Y-%m-%d")}
+          - My location is Sydney, Australia
+          - When ask weather,  use the Bureau of Meteorology (BOM) website
+    
           ## Knowledge and Search Protocol
-
-          - Exhaustively utilize your existing knowledge base to answer queries comprehensively.
-
-          - Web Search Guidelines:
-          Use web_search ONLY when you are CERTAIN that:
-          a) The information is not within your current knowledge
-          b) You cannot confidently construct a response using existing information
-          c) The query requires verified, up-to-date information (Today is {time.strftime("%Y-%m-%d")})
-
+          - Use web_search ONLY when you are CERTAIN that:
+            a) The information is not within your current knowledge
+            b) You cannot confidently construct a response using existing information
+            c) The query requires verified, up-to-date information
           - Response Strategy:
-
-          a) First, attempt to answer using internal knowledge
-          b) If knowledge is insufficient, clearly communicate the limitation
-          c) Synthesize search results with existing understanding
-          d) Maintain response conciseness (maximum 5 sentences)
+            a) First, attempt to answer using internal knowledge
+            b) If knowledge is insufficient, clearly communicate the limitation
+            c) Synthesize search results with existing understanding
+            d) Maintain response conciseness
 
           ## Operational Principles
-
           - Prioritize accuracy over volume of information
           - Be transparent about information sources
           - Ensure user satisfaction through precise, helpful responses
@@ -137,7 +133,7 @@ class TranscriptHandler(TranscriptResultStreamHandler):
             if tool_use["name"] == "web_search":
                 input_data = tool_use["input"]
                 query = input_data["query"]
-                max_results = input_data.get("max_results", 3)
+                max_results = input_data.get("max_results", 5)
                 search_results = web_search(query, max_results)
 
                 text_results = []
@@ -250,47 +246,49 @@ class TranscriptHandler(TranscriptResultStreamHandler):
             )
 
             if "AudioStream" in response:
-                # Write audio data directly to a temporary WAV file
-                with wave.open("response.wav", "wb") as wav_file:
-                    wav_file.setnchannels(1)
-                    wav_file.setsampwidth(2)
-                    wav_file.setframerate(16000)
-                    wav_file.writeframes(response["AudioStream"].read())
+                import pyaudio
+
+                # Initialize PyAudio
+                p = pyaudio.PyAudio()
+
+                # Open stream
+                stream = p.open(
+                    format=p.get_format_from_width(2),  # 16-bit PCM
+                    channels=CHANNELS,
+                    rate=RATE,  # Sample rate
+                    output=True,
+                )
 
                 print("\nPress Enter to stop the voice playback...")
-
                 should_stop = threading.Event()
 
                 def wait_for_input():
                     try:
                         input()
                         should_stop.set()
-                        with self.mixer_lock:
-                            if self.mixer.music.get_busy():
-                                self.mixer.music.stop()
                     except Exception as e:
                         print(f"\nError stopping playback: {e}")
-
-                # Play audio using pre-initialized mixer
-                with self.mixer_lock:
-                    self.mixer.music.load("response.wav")
-                    self.mixer.music.play()
 
                 input_thread = threading.Thread(target=wait_for_input)
                 input_thread.daemon = True
                 input_thread.start()
 
-                while self.mixer.music.get_busy() and not should_stop.is_set():
-                    time.sleep(0.1)
+                # Stream the audio data
+                audio_stream = response["AudioStream"]
+                chunk_size = CHUNK
+                while not should_stop.is_set():
+                    data = audio_stream.read(chunk_size)
+                    if not data:
+                        break
+                    stream.write(data)
 
                 if should_stop.is_set():
                     print("\nVoice playback stopped.")
 
-                # Remove temporary file
-                try:
-                    os.remove("response.wav")
-                except Exception as e:
-                    print(f"Error removing temporary file: {e}")
+                # Clean up
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
 
         except Exception as e:
             print(f"Error in text-to-speech: {e}")
