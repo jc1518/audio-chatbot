@@ -96,29 +96,26 @@ class TranscriptHandler(TranscriptResultStreamHandler):
     def handle_tool_use(self, tool_use):
         try:
             if tool_use["name"] == "web_search":
-                # Parse the input string as JSON
-                if isinstance(tool_use["input"], str):
-                    input_data = json.loads(tool_use["input"])
-                else:
-                    input_data = tool_use["input"]
-
+                input_data = tool_use["input"]
                 query = input_data["query"]
                 max_results = input_data.get("max_results", 3)
                 search_results = web_search(query, max_results)
 
                 # Convert search results to a readable text format
-                text_result = ""
+                text_results = []
                 for result in search_results:
-                    text_result += f"Title: {result['title']}\n"
-                    text_result += f"Link: {result['link']}\n"
-                    text_result += f"Content: {result['body']}\n\n"
+                    text_results.append(
+                        {
+                            "text": f"Title: {result['title']}\nLink: {result['link']}\nContent: {result['body']}"
+                        }
+                    )
 
-                return {"toolUseId": tool_use["toolUseId"], "content": text_result}
+                return {"toolUseId": tool_use["toolUseId"], "content": text_results}
         except Exception as e:
             print(f"Error executing web_search: {e}")
             return {
                 "toolUseId": tool_use["toolUseId"],
-                "content": "Error performing web search",
+                "content": [{"text": "Error performing web search"}],
             }
 
     def speak_response(self, text):
@@ -230,7 +227,7 @@ class TranscriptHandler(TranscriptResultStreamHandler):
 
                         full_response = ""
                         current_tool_use = None
-                        tool_use_input = ""
+                        tool_use_input_parts = []
 
                         response = self.bedrock_runtime.converse_stream(
                             modelId=modelId,
@@ -251,7 +248,7 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                         )
                                         if "toolUse" in start:
                                             current_tool_use = start["toolUse"]
-                                            tool_use_input = ""
+                                            tool_use_input_parts = []
 
                                     elif "contentBlockDelta" in event:
                                         delta = event["contentBlockDelta"]["delta"]
@@ -260,17 +257,25 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                             full_response += text
                                             print(text, end="", flush=True)
                                         elif "toolUse" in delta and current_tool_use:
-                                            tool_use_input += delta["toolUse"]["input"]
+                                            tool_use_input_parts.append(
+                                                delta["toolUse"]["input"]
+                                            )
 
                                     elif "contentBlockStop" in event:
-                                        if current_tool_use and tool_use_input:
-                                            current_tool_use["input"] = tool_use_input
-                                            # Handle tool use
+                                        if current_tool_use and tool_use_input_parts:
+                                            # Combine and parse the input parts as JSON
+                                            tool_input_str = "".join(
+                                                tool_use_input_parts
+                                            )
+                                            tool_input = json.loads(tool_input_str)
+                                            current_tool_use["input"] = tool_input
+
+                                            # Execute tool
                                             tool_result = self.handle_tool_use(
                                                 current_tool_use
                                             )
 
-                                            # Add tool use and result to the current assistant message
+                                            # Add assistant message with tool use
                                             self.conversation_history.append(
                                                 {
                                                     "role": "assistant",
@@ -284,39 +289,55 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                                                 "name": current_tool_use[
                                                                     "name"
                                                                 ],
-                                                                "input": tool_use_input,
-                                                            }
-                                                        },
-                                                        {
-                                                            "toolResult": {
-                                                                "toolUseId": tool_result[
-                                                                    "toolUseId"
-                                                                ],
-                                                                "content": tool_result[
-                                                                    "content"
-                                                                ],
+                                                                "input": tool_input,
                                                             }
                                                         },
                                                     ],
                                                 }
                                             )
 
-                                            # Reset for next potential tool use
-                                            current_tool_use = None
-                                            tool_use_input = ""
-                                            full_response = ""
+                                            # Add tool result in a new message
+                                            self.conversation_history.append(
+                                                {
+                                                    "role": "user",
+                                                    "content": [
+                                                        {"toolResult": tool_result}
+                                                    ],
+                                                }
+                                            )
 
-                                            # Get the next response after tool use
+                                            # Get final response using search results
                                             response = (
                                                 self.bedrock_runtime.converse_stream(
                                                     modelId=modelId,
                                                     inferenceConfig=INFERENCE_CONFIG,
+                                                    toolConfig=TOOL_CONFIG,
                                                     system=SYSTEM,
                                                     messages=self.conversation_history,
-                                                    toolConfig=TOOL_CONFIG,
                                                 )
                                             )
+
+                                            # Reset for processing final response
+                                            full_response = ""
                                             response_stream = response.get("stream")
+                                            if response_stream:
+                                                for event in response_stream:
+                                                    try:
+                                                        if "contentBlockDelta" in event:
+                                                            text = event[
+                                                                "contentBlockDelta"
+                                                            ]["delta"]["text"]
+                                                            full_response += text
+                                                            print(
+                                                                text, end="", flush=True
+                                                            )
+                                                    except Exception as chunk_error:
+                                                        print(
+                                                            f"\nError processing chunk: {chunk_error}"
+                                                        )
+                                                        continue
+                                            current_tool_use = None
+                                            tool_use_input_parts = []
 
                                     elif "messageStop" in event:
                                         if (
