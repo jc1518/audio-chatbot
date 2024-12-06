@@ -35,7 +35,6 @@ def web_search(query, max_results=3, max_retries=3):
                         }
                     )
 
-                print(formatted_results)
                 return formatted_results
 
         except Exception as e:
