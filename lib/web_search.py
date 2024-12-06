@@ -35,6 +35,9 @@ def web_search(query, max_results=3, max_retries=3):
                         }
                     )
 
+                print("\nCitations:")
+                for result in formatted_results:
+                    print(f"\t[{formatted_results.index(result)+1}]: {result['link']}")
                 return formatted_results
 
         except Exception as e:
