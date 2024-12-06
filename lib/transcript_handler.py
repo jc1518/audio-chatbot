@@ -11,11 +11,16 @@ from amazon_transcribe.model import TranscriptEvent
 
 from lib.web_search import web_search
 
+# Audio output
+SIZE = -16
+CHANNELS = 1
+RATE = 16000
+
 # Bedrock settings
 MODELS = [
     # "us.amazon.nova-micro-v1:0",
     # "us.amazon.nova-lite-v1:0",
-    # "us.amazon.nova-pro-v1:0",
+    "us.amazon.nova-pro-v1:0",
     # "anthropic.claude-3-5-haiku-20241022-v1:0",
     # "anthropic.claude-3-5-sonnet-20240620-v1:0",
     "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -43,8 +48,7 @@ SYSTEM = [
           Use web_search ONLY when you are CERTAIN that:
           a) The information is not within your current knowledge
           b) You cannot confidently construct a response using existing information
-          c) The query requires verified, up-to-date information
-          d) Today is {time.strftime("%Y-%m-%d")}
+          c) The query requires verified, up-to-date information (Today is {time.strftime("%Y-%m-%d")})
 
           - Response Strategy:
 
@@ -111,16 +115,23 @@ class TranscriptHandler(TranscriptResultStreamHandler):
         language_code,
         converstation_history,
     ):
-
         super().__init__(transcript_result_stream)
         self.bedrock_runtime = bedrock_runtime
         self.polly_client = polly_client
         self.language_code = language_code
-        self.listening = True  # Always listening
+        self.listening = True
         self.polly_finished = threading.Event()
-        self.conversation_history = (
-            converstation_history  # Initialize conversation history
-        )
+        self.conversation_history = converstation_history
+
+        # Pre-initialize pygame mixer
+        original_stdout = sys.stdout
+        sys.stdout = NullDevice()
+        from pygame import mixer
+
+        sys.stdout = original_stdout
+        self.mixer = mixer
+        self.mixer.init(frequency=RATE, size=SIZE, channels=CHANNELS)
+        self.mixer_lock = threading.Lock()
 
     def handle_tool_use(self, tool_use):
         try:
@@ -130,7 +141,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                 max_results = input_data.get("max_results", 3)
                 search_results = web_search(query, max_results)
 
-                # Convert search results to a readable text format
                 text_results = []
                 for result in search_results:
                     text_results.append(
@@ -148,26 +158,20 @@ class TranscriptHandler(TranscriptResultStreamHandler):
             }
 
     def speak_response(self, text):
-        mixer = None
-        mixer_lock = threading.Lock()
-        if self.language_code == "zh-CN":
-            voice_id = "Zhiyu"
-            engine = "neural"
-        else:
-            voice_id = "Joanna"
-            engine = "generative"
         try:
+            if self.language_code == "zh-CN":
+                voice_id = "Zhiyu"
+                engine = "neural"
+            else:
+                voice_id = "Joanna"
+                engine = "generative"
+
             response = self.polly_client.synthesize_speech(
                 Text=text, OutputFormat="pcm", VoiceId=voice_id, Engine=engine
             )
 
             if "AudioStream" in response:
-                original_stdout = sys.stdout
-                sys.stdout = NullDevice()
-                from pygame import mixer
-
-                sys.stdout = original_stdout
-
+                # Write audio data directly to a temporary WAV file
                 with wave.open("response.wav", "wb") as wav_file:
                     wav_file.setnchannels(1)
                     wav_file.setsampwidth(2)
@@ -176,41 +180,32 @@ class TranscriptHandler(TranscriptResultStreamHandler):
 
                 print("\nPress Enter to stop the voice playback...")
 
-                # Flag for controlling playback
                 should_stop = threading.Event()
 
                 def wait_for_input():
                     try:
-                        input()  # Wait for Enter key
+                        input()
                         should_stop.set()
-                        with mixer_lock:
-                            if mixer and mixer.get_init():
-                                mixer.music.stop()
+                        with self.mixer_lock:
+                            if self.mixer.music.get_busy():
+                                self.mixer.music.stop()
                     except Exception as e:
                         print(f"\nError stopping playback: {e}")
 
-                # Initialize mixer
-                with mixer_lock:
-                    mixer.init()
-                    mixer.music.load("response.wav")
-                    mixer.music.play()
+                # Play audio using pre-initialized mixer
+                with self.mixer_lock:
+                    self.mixer.music.load("response.wav")
+                    self.mixer.music.play()
 
-                # Start input thread
                 input_thread = threading.Thread(target=wait_for_input)
                 input_thread.daemon = True
                 input_thread.start()
 
-                # Wait for audio to finish or stop signal
-                while mixer.music.get_busy() and not should_stop.is_set():
+                while self.mixer.music.get_busy() and not should_stop.is_set():
                     time.sleep(0.1)
 
                 if should_stop.is_set():
                     print("\nVoice playback stopped.")
-
-                # Clean up
-                with mixer_lock:
-                    if mixer and mixer.get_init():
-                        mixer.quit()
 
                 # Remove temporary file
                 try:
@@ -221,13 +216,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
         except Exception as e:
             print(f"Error in text-to-speech: {e}")
         finally:
-            # Final cleanup
-            try:
-                with mixer_lock:
-                    if mixer and mixer.get_init():
-                        mixer.quit()
-            except Exception:
-                pass
             self.polly_finished.set()
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
@@ -239,14 +227,12 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                 if result.is_partial:
                     print(f"\rUser: {transcript}", end="", flush=True)
                 else:
-                    print(f"\rUser: {transcript}")  # Final transcript
+                    print(f"\rUser: {transcript}")
 
                     try:
-                        # Process response
-                        self.listening = False  # Temporarily stop listening
+                        self.listening = False
                         self.polly_finished.clear()
 
-                        # Add user message to conversation history
                         self.conversation_history.append(
                             {"role": "user", "content": [{"text": transcript}]}
                         )
@@ -292,19 +278,16 @@ class TranscriptHandler(TranscriptResultStreamHandler):
 
                                     elif "contentBlockStop" in event:
                                         if current_tool_use and tool_use_input_parts:
-                                            # Combine and parse the input parts as JSON
                                             tool_input_str = "".join(
                                                 tool_use_input_parts
                                             )
                                             tool_input = json.loads(tool_input_str)
                                             current_tool_use["input"] = tool_input
 
-                                            # Execute tool
                                             tool_result = self.handle_tool_use(
                                                 current_tool_use
                                             )
 
-                                            # Add assistant message with tool use
                                             self.conversation_history.append(
                                                 {
                                                     "role": "assistant",
@@ -325,7 +308,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                                 }
                                             )
 
-                                            # Add tool result in a new message
                                             self.conversation_history.append(
                                                 {
                                                     "role": "user",
@@ -335,7 +317,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                                 }
                                             )
 
-                                            # Get final response using search results
                                             response = (
                                                 self.bedrock_runtime.converse_stream(
                                                     modelId=modelId,
@@ -346,7 +327,6 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                                 )
                                             )
 
-                                            # Reset for processing final response
                                             full_response = ""
                                             response_stream = response.get("stream")
                                             if response_stream:
@@ -379,9 +359,8 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                     print(f"\nError processing chunk: {chunk_error}")
                                     continue
 
-                        print("\n")  # New line after response
+                        print("\n")
 
-                        # Add final assistant response to conversation history if not already added
                         if full_response:
                             self.conversation_history.append(
                                 {
@@ -390,12 +369,10 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                                 }
                             )
 
-                        # Speak the response
                         self.speak_response(full_response)
 
                         print("-" * 50 + "\n")
 
-                        # Resume listening
                         self.listening = True
                         print(
                             "Listening... You can start speaking now! (Press Ctrl+C to stop)\n"
