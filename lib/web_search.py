@@ -3,7 +3,7 @@ import time
 import random
 
 
-def web_search(query, max_results=3, max_retries=3):
+def web_search(query, max_results=5, max_retries=5):
     """
     Perform a web search with retry logic for rate limiting.
 
@@ -47,7 +47,7 @@ def web_search(query, max_results=3, max_retries=3):
                 if retry_count < max_retries:
                     # Calculate exponential backoff with jitter
                     delay = (base_delay * 2**retry_count) + (random.random() * 0.1)
-                    print(f"Rate limited, retrying in {delay:.2f} seconds...")
+                    print(f"\nRate limited, retrying in {delay:.2f} seconds...")
                     time.sleep(delay)
                     continue
 
