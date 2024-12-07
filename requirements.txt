@@ -4,3 +4,4 @@ amazon-transcribe
 pygame
 keyboard
 duckduckgo_search
+python-wordpress-xmlrpc

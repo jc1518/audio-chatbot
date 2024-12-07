@@ -1,4 +1,5 @@
 import threading
+import os
 import sys
 import random
 import json
@@ -8,6 +9,7 @@ from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent
 
 from lib.web_search import web_search
+from lib.post_blog import WordPressBlogger
 
 # Audio output
 SIZE = -16
@@ -93,7 +95,44 @@ TOOL_CONFIG = {
                     }
                 },
             }
-        }
+        },
+        {
+            "toolSpec": {
+                "name": "post_blog",
+                "description": "Post content to WordPress blog using environment variables.",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Title of the blog post",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Main content/body of the blog post",
+                            },
+                            "status": {
+                                "type": "string",
+                                "description": "Post status (draft or publish)",
+                                "default": "draft",
+                            },
+                            "categories": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of category names",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of tags",
+                            },
+                        },
+                        "required": ["title", "content"],
+                    }
+                },
+            }
+        },
     ]
 }
 
@@ -150,11 +189,41 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                     )
 
                 return {"toolUseId": tool_use["toolUseId"], "content": text_results}
+
+            elif tool_use["name"] == "post_blog":
+                input_data = tool_use["input"]
+                wp = WordPressBlogger(
+                    url=os.environ["WP_SITE_URL"],
+                    username=os.environ["WP_USERNAME"],
+                    password=os.environ["WP_APP_PASSWORD"],
+                )
+
+                try:
+                    wp.connect()
+                    post_id = wp.post_content(
+                        title=input_data["title"],
+                        content=input_data["content"],
+                        status=input_data.get("status", "draft"),
+                        categories=input_data.get("categories"),
+                        tags=input_data.get("tags"),
+                    )
+                    return {
+                        "toolUseId": tool_use["toolUseId"],
+                        "content": [
+                            {"text": f"Successfully created post with ID: {post_id}"}
+                        ],
+                    }
+                except Exception as e:
+                    return {
+                        "toolUseId": tool_use["toolUseId"],
+                        "content": [{"text": f"Error posting to WordPress: {str(e)}"}],
+                    }
+
         except Exception as e:
-            print(f"Error executing web_search: {e}")
+            print(f"Error executing tool {tool_use['name']}: {e}")
             return {
                 "toolUseId": tool_use["toolUseId"],
-                "content": [{"text": "Error performing web search"}],
+                "content": [{"text": f"Error executing {tool_use['name']}"}],
             }
 
     def process_response_stream(self, response_stream, modelId, initial_response=""):
@@ -320,7 +389,7 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         )
 
                         modelId = random.choice(MODELS)
-                        print(f"\n\r(calling {modelId})")
+                        # print(f"\n\r(calling {modelId})")
                         print("\nAssistant: ", end="", flush=True)
 
                         response = self.bedrock_runtime.converse_stream(
@@ -355,7 +424,7 @@ class TranscriptHandler(TranscriptResultStreamHandler):
                         return True
 
                     except Exception as e:
-                        print(f"\nError: {e}")
+                        print(f"\n{e}")
                         self.listening = True
                         print(
                             "Listening... You can start speaking now! (Press Ctrl+C to stop)\n"
