@@ -33,8 +33,7 @@ async def main():
     supported_languages = {
         "1": "en-US",
         "2": "zh-CN",
-        # "3": "ja-JP",
-        # "4": "es-ES",
+        "3": "es-ES",
     }
 
     # Prompt user to select a language
@@ -44,6 +43,8 @@ async def main():
             print(f"{key}: English")
         if value == "zh-CN":
             print(f"{key}: 中文")
+        if value == "es-ES":
+            print(f"{key}: Español")
 
     language_choice = input("Enter the number corresponding to your choice: ")
     selected_language = supported_languages.get(language_choice, "en-US")
