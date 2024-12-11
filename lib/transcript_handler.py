@@ -333,6 +333,9 @@ class TranscriptHandler(TranscriptResultStreamHandler):
             if self.language_code == "zh-CN":
                 voice_id = "Zhiyu"
                 engine = "neural"
+            elif self.language_code == "es-ES":
+                voice_id = "Lucia"
+                engine = "neural"
             else:
                 voice_id = "Joanna"
                 engine = "generative"
