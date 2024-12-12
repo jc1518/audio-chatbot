@@ -30,3 +30,5 @@ pip install -r requirements.txt
 ```bash
 python chatbot.py
 ```
+
+or create a bash alias to run [launch_chatbot.sh](./launch_chatbot.sh)
