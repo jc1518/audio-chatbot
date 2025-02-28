@@ -32,3 +32,7 @@ python chatbot.py
 ```
 
 or create a bash alias to run [launch_chatbot.sh](./launch_chatbot.sh)
+
+## Demo
+
+[![Watch the video](https://img.youtube.com/vi/JQwRPY6b3Ec//maxresdefault.jpg)](https://youtu.be/JQwRPY6b3Ec)
